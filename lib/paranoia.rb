@@ -99,7 +99,19 @@ module Paranoia
   def touch_paranoia_column(with_transaction=false)
     raise ActiveRecord::ReadOnlyRecord, "#{self.class} is marked as readonly" if readonly?
     if persisted?
-      touch(paranoia_column)
+      if paranoia_deleted_value.nil?
+        touch(paranoia_column)
+      else
+        changes = {}
+        timestamp_attributes_for_update_in_model.each {|column|
+          changes[column.to_s] = write_attribute(column.to_s, current_time_from_proper_timezone)
+        }
+        changes[paranoia_column] = write_attribute(paranoia_column, paranoia_deleted_value)
+        changes[self.class.locking_column] = increment_lock if locking_enabled?
+        @changed_attributes.except!(*changes.keys)
+        primary_key = self.class.primary_key
+        self.class.unscoped.where(primary_key => self[primary_key]).update_all(changes)
+      end
     elsif !frozen?
       write_attribute(paranoia_column, current_time_from_proper_timezone)
     end
@@ -177,10 +189,11 @@ class ActiveRecord::Base
     end
 
     include Paranoia
-    class_attribute :paranoia_column, :paranoia_sentinel_value
+    class_attribute :paranoia_column, :paranoia_sentinel_value, :paranoia_deleted_value
 
     self.paranoia_column = (options[:column] || :deleted_at).to_s
     self.paranoia_sentinel_value = options.fetch(:sentinel_value) { Paranoia.default_sentinel_value }
+    self.paranoia_deleted_value = options[:deleted_value]
     def self.paranoia_scope
       where(table_name => { paranoia_column => paranoia_sentinel_value })
     end
